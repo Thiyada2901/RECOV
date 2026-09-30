@@ -6,13 +6,12 @@ import io
 import re
 
 st.set_page_config(page_title="AI Reinsurance System", layout="wide")
-st.title("🤖 ระบบ AI ประมวลผลและตรวจสอบ Reinsurance Claims (Automated Filtering)")
+st.title("🤖 ระบบประมวลผล Reinsurance Bordereaux (4-Step Complete Workflow)")
 
 # ---------------------------------------------------------
-# Helper Functions สำหรับทำความสะอาดข้อมูลและการกรอง
+# Helper Functions
 # ---------------------------------------------------------
 def clean_num(val):
-    """ แปลงข้อความ/Text/Comma/วงเล็บ ให้เป็น Float ตัวเลขที่นำไปคำนวณได้จริง """
     if pd.isna(val) or val is None:
         return 0.0
     s = str(val).strip()
@@ -26,138 +25,140 @@ def clean_num(val):
     except ValueError:
         return 0.0
 
-def is_excluded_row(row):
-    """ สแกนหาคำระบุสถานะเคลมที่ไม่คุ้มครองเพื่อตัดทิ้งทั้งบรรทัด """
-    row_str = " ".join([str(val).lower().strip() for val in row.values if pd.notnull(val)])
-    
-    # คำคีย์เวิร์ดบ่งบอกว่าเคลมนี้ไม่อยู่ในความคุ้มครอง / ปฏิเสธจ่าย
-    exclude_keywords = [
-        'not cover', 'non-cover', 'excluded', 'decline', 'declined', 
-        'reject', 'rejected', 'non-reinsurance', 'out of coverage',
-        'void', 'cancel', 'cancelled', 'uncovered', 'ex-gratia'
-    ]
-    
-    for kw in exclude_keywords:
-        if kw in row_str:
-            return True
-    return False
-
-def find_best_col(df, keywords):
-    """ ค้นหาคอลัมน์ที่ตรงกับ Keyword """
+def find_col_by_keywords(df, keywords):
     for kw in keywords:
         for col in df.columns:
             if kw.lower() in str(col).strip().lower():
                 return col
     return None
 
-def process_sheet_with_filter(uploaded_file, sheet_keyword):
-    xl = pd.ExcelFile(uploaded_file)
-    
-    # 1. ค้นหา Sheet
-    target_sheet = next((s for s in xl.sheet_names if sheet_keyword.lower() in s.lower() and 'pivot' not in s.lower()), xl.sheet_names[0])
-    
-    # อ่าน Header
-    df_raw = pd.read_excel(uploaded_file, sheet_name=target_sheet, header=None, nrows=20)
-    header_row = 0
-    for idx, row in df_raw.iterrows():
-        r_str = " ".join([str(v).lower() for v in row.values if pd.notnull(v)])
-        if any(k in r_str for k in ['claim', 'สินไหม', 'policy', 'gross', 'net', 'loss']):
-            header_row = idx
-            break
-            
-    df = pd.read_excel(uploaded_file, sheet_name=target_sheet, header=header_row)
-    df.columns = [str(c).strip() for c in df.columns]
+# Initialization Session State
+if 'df_master_raw' not in st.session_state:
+    st.session_state.df_master_raw = None
 
-    # 2. กรองแถวที่ไม่คุ้มครองออก (Excluded Filter)
-    excluded_mask = df.apply(is_excluded_row, axis=1)
-    df_filtered = df[~excluded_mask].copy()
-
-    # 3. ระบุคอลัมน์ Claim No.
-    col_claim = find_best_col(df_filtered, ['เลขที่สินไหม', 'claim no', 'claim_no', 'claim']) or df_filtered.columns[0]
-    
-    # 4. ระบุคอลัมน์ Gross และ Net
-    col_gross = find_best_col(df_filtered, ['gross loss', 'settle gross', 'reserve gross', 'estimated gross', 'gross amount', 'gross'])
-    col_net = find_best_col(df_filtered, ['net loss', 'settle net', 'reserve net', 'retention', 'net amount', 'net'])
-
-    # Fallback ค้นหาคอลัมน์ตัวเลขถ้าหาจากชื่อไม่เจอ
-    if not col_gross or not col_net:
-        num_cols = []
-        for c in df_filtered.columns:
-            s_val = df_filtered[c].apply(clean_num).sum()
-            if s_val > 0:
-                num_cols.append((c, s_val))
-        num_cols.sort(key=lambda x: x[1], reverse=True)
-        if not col_gross and len(num_cols) > 0: col_gross = num_cols[0][0]
-        if not col_net and len(num_cols) > 1: col_net = num_cols[1][0]
-        elif not col_net and col_gross: col_net = col_gross
-
-    # สรุปข้อมูล
-    res = pd.DataFrame()
-    res['Claim No.'] = df_filtered[col_claim].astype(str).str.strip().str.upper()
-    res['Gross'] = df_filtered[col_gross].apply(clean_num) if col_gross else 0.0
-    res['Net'] = df_filtered[col_net].apply(clean_num) if col_net else res['Gross']
-
-    # ลบแถวที่เป็นค่าว่างหรือตัวอักษรรวมยอด
-    res = res[~res['Claim No.'].isin(['NAN', 'NONE', '', 'NULL', 'TOTAL', 'ยอดรวม', 'SUBTOTAL'])]
-    
-    return res
-
-# ---------------------------------------------------------
-# Step 1: Upload & Auto Processing
-# ---------------------------------------------------------
-st.header("📌 Step 1: โยนไฟล์ Original Data (Excel)")
+# =========================================================
+# Step 1: Upload File & Sheet Detection
+# =========================================================
+st.header("📌 Step 1: อัปโหลดไฟล์ Original Data (Excel)")
 uploaded_file = st.file_uploader("เลือกไฟล์ Original Data (.xlsx)", type=["xlsx"])
 
 if uploaded_file:
-    with st.spinner("🤖 ระบบกำลังประมวลผล คัดกรองรายการเคลมที่ไม่คุ้มครองออกให้อัตโนมัติ..."):
-        # อ่านข้อมูลพร้อมกรองเคลมไม่อยู่ในความคุ้มครอง
-        df_set = process_sheet_with_filter(uploaded_file, 'Settle')
-        df_inc = process_sheet_with_filter(uploaded_file, 'Incurred')
+    xl = pd.ExcelFile(uploaded_file)
+    
+    # อ่าน Sheet Settle และ Incurred
+    sheet_set = next((s for s in xl.sheet_names if 'settle' in s.lower() and 'pivot' not in s.lower()), xl.sheet_names[0])
+    sheet_inc = next((s for s in xl.sheet_names if ('incurred' in s.lower() or 'reserve' in s.lower()) and 'pivot' not in s.lower()), xl.sheet_names[-1])
 
-        # Groupby ตาม Claim No.
-        grp_set = df_set.groupby('Claim No.', as_index=False).agg({
-            'Gross': 'sum',
-            'Net': 'sum'
-        }).rename(columns={'Gross': 'Settle Gross Loss', 'Net': 'Settle Net Loss Retention'})
+    df_set_raw = pd.read_excel(uploaded_file, sheet_name=sheet_set)
+    df_inc_raw = pd.read_excel(uploaded_file, sheet_name=sheet_inc)
 
-        grp_inc = df_inc.groupby('Claim No.', as_index=False).agg({
-            'Gross': 'sum',
-            'Net': 'sum'
-        }).rename(columns={'Gross': 'Reserve Gross Loss', 'Net': 'Reserve Net Loss Retention'})
+    df_set_raw.columns = [str(c).strip() for c in df_set_raw.columns]
+    df_inc_raw.columns = [str(c).strip() for c in df_inc_raw.columns]
 
-        # Merge รวมตาราง
-        df_master = pd.merge(grp_set, grp_inc, on='Claim No.', how='outer').fillna(0.0)
+    # ค้นหา คอลัมน์สำคัญ
+    col_claim_set = find_col_by_keywords(df_set_raw, ['เลขที่สินไหม', 'claim no', 'claim_no', 'claim']) or df_set_raw.columns[0]
+    col_sg = find_col_by_keywords(df_set_raw, ['settle gross', 'paid gross', 'gross loss', 'gross amount', 'gross'])
+    col_sn = find_col_by_keywords(df_set_raw, ['settle net', 'paid net', 'net loss', 'retention', 'net'])
+    col_status_set = find_col_by_keywords(df_set_raw, ['status', 'remark', 'coverage', 'หมายเหตุ', 'สถานะ'])
 
-        # เติมคอลัมน์มาตรฐาน
-        for c in ['Row Labels', 'Sub Class', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด']:
-            df_master[c] = ''
-        df_master['Status'] = 'Closed'
+    col_claim_inc = find_col_by_keywords(df_inc_raw, ['เลขที่สินไหม', 'claim no', 'claim_no', 'claim']) or df_inc_raw.columns[0]
+    col_rg = find_col_by_keywords(df_inc_raw, ['reserve gross', 'estimated gross', 'gross reserve', 'incurred gross', 'gross'])
+    col_rn = find_col_by_keywords(df_inc_raw, ['reserve net', 'estimated net', 'net reserve', 'retention', 'net'])
 
-        cols_order = ['Row Labels', 'Sub Class', 'Claim No.', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด', 
-                      'Settle Gross Loss', 'Settle Net Loss Retention', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']
-        df_master = df_master[cols_order]
-
-        # คำนวณ ยอดรวม
-        tot_sg = float(df_master['Settle Gross Loss'].sum())
-        tot_sn = float(df_master['Settle Net Loss Retention'].sum())
-        tot_rg = float(df_master['Reserve Gross Loss'].sum())
-        tot_rn = float(df_master['Reserve Net Loss Retention'].sum())
-
-    st.success("✅ กรองรายการเคลมที่ไม่คุ้มครองออก และประมวลผลตาราง Master เรียบร้อยแล้ว!")
-
-    # Display Summary Metrics
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Settle Gross", f"{tot_sg:,.2f}")
-    col2.metric("Total Settle Net", f"{tot_sn:,.2f}")
-    col3.metric("Total Reserve Gross", f"{tot_rg:,.2f}")
-    col4.metric("Total Reserve Net", f"{tot_rn:,.2f}")
-
+    # =========================================================
+    # Step 2: Mapping & Processing
+    # =========================================================
     st.markdown("---")
-    st.dataframe(df_master.head(15), use_container_width=True)
+    st.header("📌 Step 2: ประมวลผลและเชื่อมโยงข้อมูล (Data Mapping)")
 
-    # ---------------------------------------------------------
-    # Export Excel File (Master Styled)
-    # ---------------------------------------------------------
+    # Settle Data
+    df_set = pd.DataFrame()
+    df_set['Claim No.'] = df_set_raw[col_claim_set].astype(str).str.strip().str.upper()
+    df_set['Settle Gross Loss'] = df_set_raw[col_sg].apply(clean_num) if col_sg else 0.0
+    df_set['Settle Net Loss Retention'] = df_set_raw[col_sn].apply(clean_num) if col_sn else df_set['Settle Gross Loss']
+    df_set['Status_Raw'] = df_set_raw[col_status_set].astype(str).str.strip() if col_status_set else 'Normal'
+
+    df_set = df_set[~df_set['Claim No.'].isin(['NAN', 'NONE', '', 'NULL', 'TOTAL', 'ยอดรวม'])]
+    grp_set = df_set.groupby('Claim No.', as_index=False).agg({
+        'Settle Gross Loss': 'sum',
+        'Settle Net Loss Retention': 'sum',
+        'Status_Raw': 'first'
+    })
+
+    # Reserve Data
+    df_inc = pd.DataFrame()
+    df_inc['Claim No.'] = df_inc_raw[col_claim_inc].astype(str).str.strip().str.upper()
+    df_inc['Reserve Gross Loss'] = df_inc_raw[col_rg].apply(clean_num) if col_rg else 0.0
+    df_inc['Reserve Net Loss Retention'] = df_inc_raw[col_rn].apply(clean_num) if col_rn else df_inc['Reserve Gross Loss']
+
+    df_inc = df_inc[~df_inc['Claim No.'].isin(['NAN', 'NONE', '', 'NULL', 'TOTAL', 'ยอดรวม'])]
+    grp_inc = df_inc.groupby('Claim No.', as_index=False).agg({
+        'Reserve Gross Loss': 'sum',
+        'Reserve Net Loss Retention': 'sum'
+    })
+
+    # Merge Raw Master
+    df_merged = pd.merge(grp_set, grp_inc, on='Claim No.', how='outer').fillna(0.0)
+    
+    for c in ['Row Labels', 'Sub Class', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด']:
+        df_merged[c] = ''
+    df_merged['Status'] = 'Closed'
+
+    st.session_state.df_master_raw = df_merged
+    st.success("✅ โหลดข้อมูลพื้นฐานเข้าสู่ระบบเรียบร้อยแล้ว")
+
+    # =========================================================
+    # Step 3: Verify & Adjust Claims (คัดกรองรายการเคลมที่ไม่คุ้มครอง)
+    # =========================================================
+    st.markdown("---")
+    st.header("📌 Step 3: ตรวจสอบและตัดเคลมที่ไม่คุ้มครอง (Claim Verification & Filtering)")
+    st.info("💡 สามารถเลือกตัดสถานะเคลมที่ไม่คุ้มครองออก หรือค้นหา Claim No. เพื่อตัดออกทีละรายการเพื่อให้ยอดตรงกับ Master")
+
+    df_working = st.session_state.df_master_raw.copy()
+
+    # 3.1 Filter ตาม Status/Remark ที่ดึงมาจากไฟล์
+    all_statuses = list(df_working['Status_Raw'].unique())
+    selected_statuses = st.multiselect(
+        "เลือกสถานะเคลมที่ต้องการนำมาคิดคำนวณ (เอาติ๊กออกเพื่อตัดเคลมที่ไม่คุ้มครองทิ้ง):",
+        options=all_statuses,
+        default=all_statuses
+    )
+    df_filtered = df_working[df_working['Status_Raw'].isin(selected_statuses)].copy()
+
+    # 3.2 Exclude Claim No. ระบุเฉพาะ
+    exclude_claims_text = st.text_area("ระบุ Claim No. ที่ต้องการตัดออกจากการคำนวณ (คั่นด้วยเครื่องหมายจุลภาค , หรือขึ้นบรรทัดใหม่):", "")
+    if exclude_claims_text.strip():
+        ex_list = [c.strip().upper() for c in re.split(r'[\n,]', exclude_claims_text) if c.strip()]
+        df_filtered = df_filtered[~df_filtered['Claim No.'].isin(ex_list)]
+
+    # =========================================================
+    # Step 4: Summary & Export Master Bordereaux
+    # =========================================================
+    st.markdown("---")
+    st.header("📌 Step 4: สรุปยอดรวมสุทธิและดาวน์โหลด (Export Master Bordereaux)")
+
+    cols_order = ['Row Labels', 'Sub Class', 'Claim No.', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด', 
+                  'Settle Gross Loss', 'Settle Net Loss Retention', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']
+    
+    df_final = df_filtered[cols_order].copy()
+
+    # คำนวณยอดรวมสุทธิหลังกรอง Step 3
+    tot_sg = float(df_final['Settle Gross Loss'].sum())
+    tot_sn = float(df_final['Settle Net Loss Retention'].sum())
+    tot_rg = float(df_final['Reserve Gross Loss'].sum())
+    tot_rn = float(df_final['Reserve Net Loss Retention'].sum())
+
+    # แสดงผลตัวเลขสรุป
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Settle Gross", f"{tot_sg:,.2f}")
+    c2.metric("Total Settle Net", f"{tot_sn:,.2f}")
+    c3.metric("Total Reserve Gross", f"{tot_rg:,.2f}")
+    c4.metric("Total Reserve Net", f"{tot_rn:,.2f}")
+
+    st.markdown("#### ตารางผลลัพธ์ Master Bordereaux (หลังตัดเคลมไม่อยู่ในเงื่อนไข)")
+    st.dataframe(df_final, use_container_width=True)
+
+    # สร้างไฟล์ Excel สำหรับ Download
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Details Claim"
@@ -196,7 +197,7 @@ if uploaded_file:
         elif c in [10, 11]: cell.fill = fill_reserve
 
     r_idx = 4
-    for r in df_master.itertuples(index=False):
+    for r in df_final.itertuples(index=False):
         ws.append(list(r))
         for c in range(1, 13):
             cell = ws.cell(row=r_idx, column=c)
@@ -223,6 +224,6 @@ if uploaded_file:
     st.download_button(
         label="📥 ดาวน์โหลด Bordereaux Master (Excel)",
         data=excel_buffer.getvalue(),
-        file_name="Bordereaux_Master_Filtered.xlsx",
+        file_name="Bordereaux_Master_Final.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
