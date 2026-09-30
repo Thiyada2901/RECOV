@@ -40,6 +40,15 @@ if uploaded_file:
     df_inc_ori.columns = df_inc_ori.columns.astype(str).str.strip()
     df_set_ori.columns = df_set_ori.columns.astype(str).str.strip()
 
+    # ฟังก์ชันแปลงคอลัมน์ให้เป็นตัวเลขแบบปลอดภัย (กันข้อความ/ลูกน้ำทำเลขเป็น 0)
+    def clean_numeric_col(df, col_name):
+        if col_name and col_name in df.columns:
+            return pd.to_numeric(
+                df[col_name].astype(str).str.replace(',', '').str.replace(' ', '').str.strip(),
+                errors='coerce'
+            ).fillna(0.0)
+        return pd.Series(0.0, index=df.index)
+
     def find_col(df, possible_names):
         for name in possible_names:
             if name in df.columns:
@@ -57,8 +66,11 @@ if uploaded_file:
     col_paid_set = find_col(df_set_ori, ['ค่าสินไหม', 'ค่าสินไหมจ่าย', 'Settle Amount', 'Paid Amount'])
     col_ret_set = find_col(df_set_ori, ['Retention', 'Retention Amount'])
 
-    # หากไม่มีคอลัมน์หลัก ให้ใช้คอลัมน์แรกสุดเพื่อกันพัง
     if not col_claim_set: col_claim_set = df_set_ori.columns[0]
+
+    # แปลงคอลัมน์การเงินให้เป็น float ชัวร์ๆ
+    if col_paid_set: df_set_ori[col_paid_set] = clean_numeric_col(df_set_ori, col_paid_set)
+    if col_ret_set: df_set_ori[col_ret_set] = clean_numeric_col(df_set_ori, col_ret_set)
 
     agg_dict_set = {}
     rename_dict_set = {col_claim_set: 'Claim No.'}
@@ -88,6 +100,10 @@ if uploaded_file:
 
     if not col_claim_inc: col_claim_inc = df_inc_ori.columns[0]
 
+    # แปลงคอลัมน์การเงินให้เป็น float ชัวร์ๆ
+    if col_est_inc: df_inc_ori[col_est_inc] = clean_numeric_col(df_inc_ori, col_est_inc)
+    if col_ret_inc: df_inc_ori[col_ret_inc] = clean_numeric_col(df_inc_ori, col_ret_inc)
+
     agg_dict_inc = {}
     rename_dict_inc = {col_claim_inc: 'Claim No.'}
 
@@ -103,7 +119,7 @@ if uploaded_file:
 
     df_inc_grp = df_inc_ori.groupby(col_claim_inc, as_index=False).agg(agg_dict_inc).rename(columns=rename_dict_inc)
 
-    # 🔒 รับประกันว่า df_inc_grp มีคอลัมน์ครบถ้วนก่อนทำการ Merge กัน KeyError
+    # รับประกันคอลัมน์ครบถ้วน
     for required_col in ['Claim No.', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']:
         if required_col not in df_inc_grp.columns:
             if required_col in ['Reserve Gross Loss', 'Reserve Net Loss Retention']:
@@ -113,29 +129,28 @@ if uploaded_file:
             else:
                 df_inc_grp[required_col] = ''
 
-    # Outer Merge on Claim No.
+    # Merge Data
     df_bor = pd.merge(df_set_grp, df_inc_grp[['Claim No.', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']], on='Claim No.', how='outer')
 
-    # จัดการคอลัมน์ฝั่ง Bordereaux ให้ครบถ้วน
     for c in ['Row Labels', 'Sub Class', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด']:
         if c not in df_bor.columns:
             df_bor[c] = ''
 
-    df_bor['Settle Gross Loss'] = df_bor['Settle Gross Loss'].fillna(0) if 'Settle Gross Loss' in df_bor.columns else 0
-    df_bor['Settle Net Loss Retention'] = df_bor['Settle Net Loss Retention'].fillna(0) if 'Settle Net Loss Retention' in df_bor.columns else 0
-    df_bor['Reserve Gross Loss'] = df_bor['Reserve Gross Loss'].fillna(0)
-    df_bor['Reserve Net Loss Retention'] = df_bor['Reserve Net Loss Retention'].fillna(0)
+    df_bor['Settle Gross Loss'] = pd.to_numeric(df_bor['Settle Gross Loss'], errors='coerce').fillna(0.0) if 'Settle Gross Loss' in df_bor.columns else 0.0
+    df_bor['Settle Net Loss Retention'] = pd.to_numeric(df_bor['Settle Net Loss Retention'], errors='coerce').fillna(0.0) if 'Settle Net Loss Retention' in df_bor.columns else 0.0
+    df_bor['Reserve Gross Loss'] = pd.to_numeric(df_bor['Reserve Gross Loss'], errors='coerce').fillna(0.0)
+    df_bor['Reserve Net Loss Retention'] = pd.to_numeric(df_bor['Reserve Net Loss Retention'], errors='coerce').fillna(0.0)
     df_bor['Status'] = df_bor['Status'].fillna('Closed')
 
     cols_order = ['Row Labels', 'Sub Class', 'Claim No.', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด', 
                   'Settle Gross Loss', 'Settle Net Loss Retention', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']
     df_bor = df_bor[cols_order]
 
-    # Totals
-    s_settle_gross = df_bor['Settle Gross Loss'].sum()
-    s_settle_net = df_bor['Settle Net Loss Retention'].sum()
-    s_res_gross = df_bor['Reserve Gross Loss'].sum()
-    s_res_net = df_bor['Reserve Net Loss Retention'].sum()
+    # รวมผลลัพธ์
+    s_settle_gross = float(df_bor['Settle Gross Loss'].sum())
+    s_settle_net = float(df_bor['Settle Net Loss Retention'].sum())
+    s_res_gross = float(df_bor['Reserve Gross Loss'].sum())
+    s_res_net = float(df_bor['Reserve Net Loss Retention'].sum())
 
     st.dataframe(df_bor.head(15), use_container_width=True)
 
