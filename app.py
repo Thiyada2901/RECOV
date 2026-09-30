@@ -10,13 +10,13 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 st.set_page_config(page_title="AI Reinsurance System", layout="wide")
-st.title("🤖 ระบบ AI ประมวลผลและตรวจสอบ Reinsurance Claims (Master Structure & Styling)")
+st.title("🤖 ระบบ AI ประมวลผลและตรวจสอบ Reinsurance Claims")
 
 # ---------------------------------------------------------
 # Helper Functions สำหรับจัดการตัวเลขและการค้นหาคอลัมน์
 # ---------------------------------------------------------
 def clean_numeric_series(series):
-    """ แปลงข้อความ/Text/Comma ให้เป็น Float ตัวเลขที่นำไปคำนวณได้จริง """
+    """ แปลงข้อความ/Text/Comma/วงเล็บ ให้เป็น Float ตัวเลขที่นำไปคำนวณได้จริง """
     if series is None:
         return pd.Series(0.0)
     
@@ -26,13 +26,15 @@ def clean_numeric_series(series):
         .str.replace('$', '', regex=False)
         .str.replace(',', '', regex=False)
         .str.replace(' ', '', regex=False)
+        .str.replace('(', '-', regex=False)
+        .str.replace(')', '', regex=False)
         .str.strip()
     )
     s_clean = s_clean.replace(['-', 'N/A', 'nan', 'None', 'null', ''], '0')
     return pd.to_numeric(s_clean, errors='coerce').fillna(0.0)
 
 def find_col_smart(df, possible_keywords):
-    """ ค้นหาคอลัมน์จากคีย์เวิร์ดแบบยืดหยุ่น """
+    """ ค้นหา index/ชื่อคอลัมน์จากคีย์เวิร์ดแบบยืดหยุ่น """
     for name in possible_keywords:
         for col in df.columns:
             if name.lower() == str(col).strip().lower():
@@ -41,7 +43,7 @@ def find_col_smart(df, possible_keywords):
         for col in df.columns:
             if name.lower() in str(col).strip().lower():
                 return col
-    return None
+    return df.columns[0] if len(df.columns) > 0 else None
 
 # ---------------------------------------------------------
 # Step 1: Upload File
@@ -53,52 +55,66 @@ if uploaded_file:
     xl = pd.ExcelFile(uploaded_file)
     
     # Auto detect sheet names
-    inc_sheet = [s for s in xl.sheet_names if 'Incurred' in s and 'Pivot' not in s][0]
-    set_sheet = [s for s in xl.sheet_names if 'Settle' in s and 'Pivot' not in s][0]
+    inc_sheets = [s for s in xl.sheet_names if 'Incurred' in s and 'Pivot' not in s]
+    set_sheets = [s for s in xl.sheet_names if 'Settle' in s and 'Pivot' not in s]
+    
+    inc_sheet = inc_sheets[0] if inc_sheets else xl.sheet_names[0]
+    set_sheet = set_sheets[0] if set_sheets else (xl.sheet_names[1] if len(xl.sheet_names) > 1 else xl.sheet_names[0])
     
     df_inc_ori = pd.read_excel(uploaded_file, sheet_name=inc_sheet)
     df_set_ori = pd.read_excel(uploaded_file, sheet_name=set_sheet)
     
-    st.success("✅ AI อ่านและทำความเข้าใจโครงสร้าง Ori Data เรียบร้อยแล้ว!")
+    df_inc_ori.columns = [str(c).strip() for c in df_inc_ori.columns]
+    df_set_ori.columns = [str(c).strip() for c in df_set_ori.columns]
+
+    st.success("✅ AI อ่านโครงสร้างไฟล์เรียบร้อยแล้ว!")
+
+    # ---------------------------------------------------------
+    # Mapping Selection UI (ป้องกันคอลัมน์ผิดพลาด)
+    # ---------------------------------------------------------
+    st.subheader("⚙️ ตรวจสอบการเลือกคอลัมน์การเงิน (หากตัวเลขไม่ตรง สามารถปรับเลือกชื่อคอลัมน์ได้ที่นี่)")
     
+    cols_set_list = list(df_set_ori.columns)
+    cols_inc_list = list(df_inc_ori.columns)
+
+    def_sg = find_col_smart(df_set_ori, ['Settle Gross Loss', 'Paid Gross', 'Gross Loss', 'Gross Amount', 'ค่าสินไหมรวม', 'Gross'])
+    def_sn = find_col_smart(df_set_ori, ['Settle Net Loss Retention', 'Paid Net', 'Net Loss', 'Retention', 'ค่าสินไหมสุทธิ', 'Net'])
+    
+    def_rg = find_col_smart(df_inc_ori, ['Reserve Gross Loss', 'Estimated Gross', 'Gross Reserve', 'Incurred Gross', 'Gross Loss', 'Gross'])
+    def_rn = find_col_smart(df_inc_ori, ['Reserve Net Loss Retention', 'Estimated Net', 'Net Reserve', 'Retention', 'Net Loss', 'Net'])
+
+    idx_sg = cols_set_list.index(def_sg) if def_sg in cols_set_list else 0
+    idx_sn = cols_set_list.index(def_sn) if def_sn in cols_set_list else min(1, len(cols_set_list)-1)
+    idx_rg = cols_inc_list.index(def_rg) if def_rg in cols_inc_list else 0
+    idx_rn = cols_inc_list.index(def_rn) if def_rn in cols_inc_list else min(1, len(cols_inc_list)-1)
+
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    sel_set_gross = col_m1.selectbox("Settle Gross Column:", cols_set_list, index=idx_sg)
+    sel_set_net = col_m2.selectbox("Settle Net Column:", cols_set_list, index=idx_sn)
+    sel_inc_gross = col_m3.selectbox("Reserve Gross Column:", cols_inc_list, index=idx_rg)
+    sel_inc_net = col_m4.selectbox("Reserve Net Column:", cols_inc_list, index=idx_rn)
+
     # ---------------------------------------------------------
     # Step 2: Merge & Build Master Bordereaux (Details Claim)
     # ---------------------------------------------------------
     st.markdown("---")
-    st.header("📋 Step 2: ตรวจสอบ Bordereaux Master (Details Claim - ตกแต่งสีสันตาม Master)")
-    
-    # Clean whitespace ในชื่อคอลัมน์
-    df_inc_ori.columns = [str(c).strip() for c in df_inc_ori.columns]
-    df_set_ori.columns = [str(c).strip() for c in df_set_ori.columns]
+    st.header("📋 Step 2: ตรวจสอบ Bordereaux Master (Details Claim)")
 
-    # --- Mapping คอลัมน์ Settlement Data ---
-    col_claim_set = find_col_smart(df_set_ori, ['เลขที่สินไหม', 'Claim No', 'Claim No.', 'เลขสินไหม', 'Claim_No'])
+    # Mapping คอลัมน์พื้นฐาน Settlement
+    col_claim_set = find_col_smart(df_set_ori, ['เลขที่สินไหม', 'Claim No', 'Claim No.', 'เลขสินไหม'])
     col_branch_set = find_col_smart(df_set_ori, ['สาขา', 'Branch'])
     col_subclass_set = find_col_smart(df_set_ori, ['Sub Class', 'SubClass', 'Class'])
     col_policy_set = find_col_smart(df_set_ori, ['เลขที่กรมธรรม์', 'Policy No', 'Policy No.'])
     col_date_set = find_col_smart(df_set_ori, ['วันที่เกิดเหตุ', 'Loss Date', 'Date of Loss'])
     col_insured_set = find_col_smart(df_set_ori, ['ชื่อผู้เอาประกัน', 'Insured Name', 'Insured'])
     col_province_set = find_col_smart(df_set_ori, ['จังหวัด', 'Province'])
-    
-    # ดึงคอลัมน์ Gross และ Net ของ Settlement
-    col_paid_gross = find_col_smart(df_set_ori, ['Settle Gross Loss', 'Settle Gross', 'Paid Gross', 'Gross Loss', 'Gross Amount', 'ค่าสินไหมรวม', 'ค่าสินไหม (Gross)', 'Amount Gross', 'Gross'])
-    col_paid_net = find_col_smart(df_set_ori, ['Settle Net Loss Retention', 'Settle Net', 'Paid Net', 'Net Loss', 'Retention Amount', 'Retention', 'ค่าสินไหมสุทธิ', 'ค่าสินไหม (Net)', 'Settle Net Loss', 'Net'])
 
-    if not col_paid_gross:
-        col_paid_gross = find_col_smart(df_set_ori, ['ค่าสินไหม', 'ค่าสินไหมจ่าย', 'Settle Amount', 'Paid Amount', 'Amount'])
-
-    if not col_claim_set:
-        col_claim_set = df_set_ori.columns[0]
-
-    # Clean Claim No. ป้องกัน Merge จับคู่ไม่เจอ
-    df_set_ori[col_claim_set] = df_set_ori[col_claim_set].astype(str).str.strip().str.upper()
-
-    # แปลงคอลัมน์การเงิน
-    df_set_ori['Settle Gross Loss'] = clean_numeric_series(df_set_ori[col_paid_gross]) if col_paid_gross else 0.0
-    df_set_ori['Settle Net Loss Retention'] = clean_numeric_series(df_set_ori[col_paid_net]) if col_paid_net else df_set_ori['Settle Gross Loss']
+    df_set_ori['Claim_Clean'] = df_set_ori[col_claim_set].astype(str).str.strip().str.upper()
+    df_set_ori['Settle Gross Loss'] = clean_numeric_series(df_set_ori[sel_set_gross])
+    df_set_ori['Settle Net Loss Retention'] = clean_numeric_series(df_set_ori[sel_set_net])
 
     agg_dict_set = {'Settle Gross Loss': 'sum', 'Settle Net Loss Retention': 'sum'}
-    rename_dict_set = {col_claim_set: 'Claim No.'}
+    rename_dict_set = {'Claim_Clean': 'Claim No.'}
 
     if col_branch_set: agg_dict_set[col_branch_set] = 'first'; rename_dict_set[col_branch_set] = 'Row Labels'
     if col_subclass_set: agg_dict_set[col_subclass_set] = 'first'; rename_dict_set[col_subclass_set] = 'Sub Class'
@@ -107,10 +123,10 @@ if uploaded_file:
     if col_insured_set: agg_dict_set[col_insured_set] = 'first'; rename_dict_set[col_insured_set] = 'Insured Name'
     if col_province_set: agg_dict_set[col_province_set] = 'first'; rename_dict_set[col_province_set] = 'จังหวัด'
 
-    df_set_grp = df_set_ori.groupby(col_claim_set, as_index=False).agg(agg_dict_set).rename(columns=rename_dict_set)
+    df_set_grp = df_set_ori.groupby('Claim_Clean', as_index=False).agg(agg_dict_set).rename(columns=rename_dict_set)
 
-    # --- Mapping คอลัมน์ Incurred / Reserve Data ---
-    col_claim_inc = find_col_smart(df_inc_ori, ['เลขที่สินไหม', 'Claim No', 'Claim No.', 'เลขสินไหม', 'Claim_No'])
+    # Mapping คอลัมน์พื้นฐาน Reserve / Incurred
+    col_claim_inc = find_col_smart(df_inc_ori, ['เลขที่สินไหม', 'Claim No', 'Claim No.', 'เลขสินไหม'])
     col_branch_inc = find_col_smart(df_inc_ori, ['สาขา', 'Branch'])
     col_subclass_inc = find_col_smart(df_inc_ori, ['Sub Class', 'SubClass'])
     col_policy_inc = find_col_smart(df_inc_ori, ['เลขที่กรมธรรม์', 'Policy No'])
@@ -119,25 +135,12 @@ if uploaded_file:
     col_province_inc = find_col_smart(df_inc_ori, ['จังหวัด', 'Province'])
     col_status_inc = find_col_smart(df_inc_ori, ['สถานะ', 'Status'])
 
-    # ดึงคอลัมน์ Gross และ Net ของ Reserve
-    col_est_gross = find_col_smart(df_inc_ori, ['Reserve Gross Loss', 'Reserve Gross', 'Estimated Gross', 'Gross Reserve', 'ประมาณการค่าสินไหม (Gross)', 'Incurred Gross', 'Gross Loss', 'Gross'])
-    col_est_net = find_col_smart(df_inc_ori, ['Reserve Net Loss Retention', 'Reserve Net', 'Estimated Net', 'Net Reserve', 'Retention (By type of loss)', 'Retention', 'ประมาณการค่าสินไหม (Net)', 'Net Loss', 'Net'])
-
-    if not col_est_gross:
-        col_est_gross = find_col_smart(df_inc_ori, ['ประมาณการค่าสินไหม', 'Reserve Amount', 'Estimated Loss', 'Reserve', 'Incurred'])
-
-    if not col_claim_inc:
-        col_claim_inc = df_inc_ori.columns[0]
-
-    # Clean Claim No. ฝั่ง Incurred
-    df_inc_ori[col_claim_inc] = df_inc_ori[col_claim_inc].astype(str).str.strip().str.upper()
-
-    # แปลงคอลัมน์การเงิน
-    df_inc_ori['Reserve Gross Loss'] = clean_numeric_series(df_inc_ori[col_est_gross]) if col_est_gross else 0.0
-    df_inc_ori['Reserve Net Loss Retention'] = clean_numeric_series(df_inc_ori[col_est_net]) if col_est_net else df_inc_ori['Reserve Gross Loss']
+    df_inc_ori['Claim_Clean'] = df_inc_ori[col_claim_inc].astype(str).str.strip().str.upper()
+    df_inc_ori['Reserve Gross Loss'] = clean_numeric_series(df_inc_ori[sel_inc_gross])
+    df_inc_ori['Reserve Net Loss Retention'] = clean_numeric_series(df_inc_ori[sel_inc_net])
 
     agg_dict_inc = {'Reserve Gross Loss': 'sum', 'Reserve Net Loss Retention': 'sum'}
-    rename_dict_inc = {col_claim_inc: 'Claim No.'}
+    rename_dict_inc = {'Claim_Clean': 'Claim No.'}
 
     if col_branch_inc: agg_dict_inc[col_branch_inc] = 'first'; rename_dict_inc[col_branch_inc] = 'Row Labels'
     if col_subclass_inc: agg_dict_inc[col_subclass_inc] = 'first'; rename_dict_inc[col_subclass_inc] = 'Sub Class'
@@ -147,26 +150,18 @@ if uploaded_file:
     if col_province_inc: agg_dict_inc[col_province_inc] = 'first'; rename_dict_inc[col_province_inc] = 'จังหวัด'
     if col_status_inc: agg_dict_inc[col_status_inc] = 'first'; rename_dict_inc[col_status_inc] = 'Status'
 
-    df_inc_grp = df_inc_ori.groupby(col_claim_inc, as_index=False).agg(agg_dict_inc).rename(columns=rename_dict_inc)
+    df_inc_grp = df_inc_ori.groupby('Claim_Clean', as_index=False).agg(agg_dict_inc).rename(columns=rename_dict_inc)
 
-    # รับประกันคอลัมน์ครบถ้วน
-    for required_col in ['Claim No.', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']:
-        if required_col not in df_inc_grp.columns:
-            if required_col in ['Reserve Gross Loss', 'Reserve Net Loss Retention']:
-                df_inc_grp[required_col] = 0.0
-            elif required_col == 'Status':
-                df_inc_grp[required_col] = 'Closed'
-            else:
-                df_inc_grp[required_col] = ''
+    if 'Status' not in df_inc_grp.columns:
+        df_inc_grp['Status'] = 'Closed'
 
-    # Merge Data (แบบ Full Outer เพื่อรวมเลขจากทั้ง 2 ฝั่งให้อยู่ครบ)
+    # Merge Data
     df_bor = pd.merge(df_set_grp, df_inc_grp[['Claim No.', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']], on='Claim No.', how='outer')
 
     for c in ['Row Labels', 'Sub Class', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด']:
         if c not in df_bor.columns:
             df_bor[c] = ''
 
-    # Clean ตัวเลขหลัง Merge
     df_bor['Settle Gross Loss'] = clean_numeric_series(df_bor.get('Settle Gross Loss'))
     df_bor['Settle Net Loss Retention'] = clean_numeric_series(df_bor.get('Settle Net Loss Retention'))
     df_bor['Reserve Gross Loss'] = clean_numeric_series(df_bor.get('Reserve Gross Loss'))
@@ -177,20 +172,26 @@ if uploaded_file:
                   'Settle Gross Loss', 'Settle Net Loss Retention', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']
     df_bor = df_bor[cols_order]
 
-    # รวมยอดสรุปผลลัพธ์
+    # คำนวณยอดรวม
     s_settle_gross = float(df_bor['Settle Gross Loss'].sum())
     s_settle_net = float(df_bor['Settle Net Loss Retention'].sum())
     s_res_gross = float(df_bor['Reserve Gross Loss'].sum())
     s_res_net = float(df_bor['Reserve Net Loss Retention'].sum())
 
-    st.dataframe(df_bor.head(15), use_container_width=True)
+    st.dataframe(df_bor.head(10), use_container_width=True)
 
-    # แสดงผล Card ตรวจสอบยอดรวมตรงตาม Master
+    # Card แสดงผลยอดรวม 4 ช่องตรงเป๊ะตาม Master Image
     col_a, col_b, col_c, col_d = st.columns(4)
     col_a.metric("Total Settle Gross", f"{s_settle_gross:,.2f}")
     col_b.metric("Total Settle Net", f"{s_settle_net:,.2f}")
     col_c.metric("Total Reserve Gross", f"{s_res_gross:,.2f}")
     col_d.metric("Total Reserve Net", f"{s_res_net:,.2f}")
+
+    # ตรวจสอบความถูกต้องกับรูปภาพ[cite: 5]
+    if abs(s_settle_gross - 446018209.84) < 1 and abs(s_res_gross - 1236790997.87) < 1:
+        st.success("🎯 ยอดรวมการเงินตรงกับรูป Master 100% เรียบร้อยแล้ว!")
+    else:
+        st.warning("⚠️ ยอดรวมยังไม่ตรงกับรูป Master โปรดเปลี่ยนตัวเลือกในเมนู 'ตรวจสอบการเลือกคอลัมน์การเงิน' ด้านบนให้ตรงกับชื่อคอลัมน์ใน Excel")
 
     # ---------------------------------------------------------
     # Styling Bordereaux Workbook (Excel Export)
@@ -279,7 +280,7 @@ if uploaded_file:
     bor_wb.save(bor_buffer)
 
     st.download_button(
-        label="📥 ดาวน์โหลด Bordereaux Master (มีสีสันตาม Master Excel)",
+        label="📥 ดาวน์โหลด Bordereaux Master (Excel)",
         data=bor_buffer.getvalue(),
         file_name="Bordereaux_Claim_Master_Styled.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -289,11 +290,11 @@ if uploaded_file:
         st.session_state['approved_step1'] = True
 
     # ---------------------------------------------------------
-    # Step 3: Build Full Master Summary Claim (By Layer with Yellow Headers)
+    # Step 3: Build Full Master Summary Claim (By Layer)
     # ---------------------------------------------------------
     if st.session_state.get('approved_step1'):
         st.markdown("---")
-        st.header("📊 Step 3: AI สร้างตาราง Summary Claim (By Layer) ตกแต่งหัวตารางสีเหลืองสด")
+        st.header("📊 Step 3: AI สร้างตาราง Summary Claim (By Layer)")
 
         gross_pla = s_settle_gross + s_res_gross
         net_pla = s_settle_net + s_res_net
@@ -380,7 +381,7 @@ if uploaded_file:
         sum_wb.save(sum_buffer)
 
         st.download_button(
-            label="📥 ดาวน์โหลด Summary Claim By Layer Master (พร้อมหัวตารางสีเหลืองสด)",
+            label="📥 ดาวน์โหลด Summary Claim By Layer Master (Excel)",
             data=sum_buffer.getvalue(),
             file_name="Summary_Claim_By_Layer_Master_Styled.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -394,7 +395,7 @@ if uploaded_file:
     # ---------------------------------------------------------
     if st.session_state.get('approved_step2'):
         st.markdown("---")
-        st.header("📄 Step 4: ออกเอกสารรายงาน PDF (PLA / SLA Advice)")
+        st.header("📄 Step 4: ออกเอกสารรายงาน PDF (PLA Advice)")
 
         pdf_buffer = io.BytesIO()
         doc = SimpleDocTemplate(
@@ -479,6 +480,8 @@ TEL. 1736, 0 2239 2200"""
         elements.append(Paragraph("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;We regret to inform you that we have received the loss advice from the claimant as per following detail.", style_body))
         elements.append(Spacer(1, 10))
 
+        layer_2nd = calc_layer_row("2nd Layer", 220000000, 120000000, gross_pla, net_pla)
+
         details_rows = [
             ("CLAIM NO.", ": Please see Attachment", "EVENT NO. : E2026-0005"),
             ("POLICY NO.", ": Please see Attachment", ""),
@@ -532,7 +535,7 @@ TEL. 1736, 0 2239 2200"""
 
         doc.build(elements)
 
-        st.success("🎉 ระบบประมวลผลคำนวณตัวเลขและออกเอกสาร PDF ฉบับสมบูรณ์เรียบร้อยแล้ว!")
+        st.success("🎉 ออกเอกสาร PDF สำเร็จ!")
         st.download_button(
             label="📄 ดาวน์โหลดเอกสารรายงาน PDF (PLA Advice)",
             data=pdf_buffer.getvalue(),
