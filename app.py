@@ -6,233 +6,185 @@ from openpyxl.utils import get_column_letter
 import io
 import re
 
-st.set_page_config(page_title="Reinsurance Automated System", layout="wide")
-st.title("🤖 ระบบประมวลผล Reinsurance Bordereaux อัตโนมัติ 100%")
+st.set_page_config(page_title="AI Reinsurance System", layout="wide")
+st.title("🤖 ระบบประมวลผล Reinsurance Bordereaux (Master Connected)")
 
-# ==========================================
-# CORE ENGINE: อัลกอริทึมวิเคราะห์อัตโนมัติในตัวเอง
-# ==========================================
-
-def clean_to_float(val):
-    """ คลีนทุกรูปแบบตัวเลข/ข้อความ/วงเล็บ ให้เป็น Float ปลอดภัย 100% """
+# ---------------------------------------------------------
+# Helper Functions: คลีนข้อมูลตัวเลขและข้อความ
+# ---------------------------------------------------------
+def clean_num(val):
     if pd.isna(val) or val is None:
         return 0.0
     s = str(val).strip()
     if not s or s.lower() in ['nan', 'none', 'null', '-', 'n/a']:
         return 0.0
-    # จัดการตัวเลขติดลบในวงเล็บ เช่น (1,000.00) -> -1000.00
     if s.startswith('(') and s.endswith(')'):
         s = '-' + s[1:-1]
-    # ลบสัญลักษณ์ที่ไม่ใช่ตัวเลข
     s = re.sub(r'[^0-9.-]', '', s)
     try:
         return float(s) if s else 0.0
     except ValueError:
         return 0.0
 
-def process_sheet_fully_auto(uploaded_file, sheet_keyword):
-    """ สแกนและดึงข้อมูลจาก Sheet ที่ต้องการแบบอัตโนมัติโดยไม่ต้องให้ผู้ใช้ระบุหัวตาราง """
+def find_col_by_keywords(df, keywords):
+    """ ค้นหาคอลัมน์ที่ตรงกับ Keyword ที่กำหนด """
+    for kw in keywords:
+        for col in df.columns:
+            if kw.lower() in str(col).strip().lower():
+                return col
+    return None
+
+# ---------------------------------------------------------
+# Step 1: Upload File & Processing
+# ---------------------------------------------------------
+st.header("📌 Step 1: โยนไฟล์ Original Data (Excel)")
+uploaded_file = st.file_uploader("เลือกไฟล์ Original Data (.xlsx)", type=["xlsx"])
+
+if uploaded_file:
     xl = pd.ExcelFile(uploaded_file)
     
-    # 1. ค้นหา Sheet ที่ถูกต้องอัตโนมัติ
-    target_sheet = None
-    for s in xl.sheet_names:
-        if sheet_keyword.lower() in s.lower() and 'pivot' not in s.lower():
-            target_sheet = s
-            break
-    if not target_sheet:
-        target_sheet = xl.sheet_names[0]
+    # 1. ค้นหา Sheet Settle และ Incurred
+    sheet_set = next((s for s in xl.sheet_names if 'settle' in s.lower() and 'pivot' not in s.lower()), xl.sheet_names[0])
+    sheet_inc = next((s for s in xl.sheet_names if ('incurred' in s.lower() or 'reserve' in s.lower()) and 'pivot' not in s.lower()), xl.sheet_names[-1])
 
-    # อ่านข้อมูลสแกน 25 แถวแรก
-    df_raw = pd.read_excel(uploaded_file, sheet_name=target_sheet, header=None, nrows=25)
+    # อ่านข้อมูลแบบข้ามแถวว่าง/หัวเรื่อง
+    df_set_raw = pd.read_excel(uploaded_file, sheet_name=sheet_set)
+    df_inc_raw = pd.read_excel(uploaded_file, sheet_name=sheet_inc)
+
+    # Clean Header Name
+    df_set_raw.columns = [str(c).strip() for c in df_set_raw.columns]
+    df_inc_raw.columns = [str(c).strip() for c in df_inc_raw.columns]
+
+    # 2. ค้นหาคอลัมน์สำคัญฝั่ง Settlement
+    col_claim_set = find_col_by_keywords(df_set_raw, ['เลขที่สินไหม', 'claim no', 'claim_no', 'claim']) or df_set_raw.columns[0]
+    col_sg = find_col_by_keywords(df_set_raw, ['settle gross', 'paid gross', 'gross loss', 'gross amount', 'gross'])
+    col_sn = find_col_by_keywords(df_set_raw, ['settle net', 'paid net', 'net loss', 'retention', 'net'])
+
+    # 3. ค้นหาคอลัมน์สำคัญฝั่ง Reserve / Incurred
+    col_claim_inc = find_col_by_keywords(df_inc_raw, ['เลขที่สินไหม', 'claim no', 'claim_no', 'claim']) or df_inc_raw.columns[0]
+    col_rg = find_col_by_keywords(df_inc_raw, ['reserve gross', 'estimated gross', 'gross reserve', 'incurred gross', 'gross'])
+    col_rn = find_col_by_keywords(df_inc_raw, ['reserve net', 'estimated net', 'net reserve', 'retention', 'net'])
+
+    # ---------------------------------------------------------
+    # Step 2: Processing & Data Aggregation
+    # ---------------------------------------------------------
+    # Settle Processing
+    df_set = pd.DataFrame()
+    df_set['Claim No.'] = df_set_raw[col_claim_set].astype(str).str.strip().str.upper()
+    df_set['Settle Gross Loss'] = df_set_raw[col_sg].apply(clean_num) if col_sg else 0.0
+    df_set['Settle Net Loss Retention'] = df_set_raw[col_sn].apply(clean_num) if col_sn else df_set['Settle Gross Loss']
     
-    # 2. ค้นหาแถวที่เป็น Header จริง
-    header_row = 0
-    for idx, row in df_raw.iterrows():
-        row_str = " ".join([str(v).lower() for v in row.values if pd.notnull(v)])
-        if any(k in row_str for k in ['claim', 'สินไหม', 'policy', 'gross', 'net', 'amount', 'loss']):
-            header_row = idx
-            break
-            
-    # อ่าน Dataframe ตาม Header ที่พบ
-    df = pd.read_excel(uploaded_file, sheet_name=target_sheet, header=header_row)
-    df.columns = [str(c).strip() for c in df.columns]
+    # กรองแถวที่ไม่ใช่ Claim
+    df_set = df_set[~df_set['Claim No.'].isin(['NAN', 'NONE', '', 'NULL', 'TOTAL', 'ยอดรวม'])]
+    grp_set = df_set.groupby('Claim No.', as_index=False).sum()
 
-    # 3. ระบุคอลัมน์ Claim No.
-    claim_col = None
-    for c in df.columns:
-        if any(k in c.lower() for k in ['claim', 'สินไหม', 'เลขที่', 'no']):
-            claim_col = c
-            break
-    if not claim_col:
-        claim_col = df.columns[0] # Fallback คอลัมน์แรก
-
-    # 4. ระบุคอลัมน์ Gross และ Net ด้วยการสแกนประเภทข้อมูลยอดรวม
-    numeric_scores = []
-    for c in df.columns:
-        # แปลงข้อมูลทั้งคอลัมน์เป็นตัวเลข
-        col_floats = df[c].apply(clean_to_float)
-        total_val = col_floats.sum()
-        if total_val > 0:
-            numeric_scores.append((c, total_val, col_floats))
-
-    # เรียงลำดับคอลัมน์ที่มีมูลค่าตัวเลขสูงสุด
-    numeric_scores.sort(key=lambda x: x[1], reverse=True)
-
-    gross_col_name, net_col_name = None, None
+    # Reserve Processing
+    df_inc = pd.DataFrame()
+    df_inc['Claim No.'] = df_inc_raw[col_claim_inc].astype(str).str.strip().str.upper()
+    df_inc['Reserve Gross Loss'] = df_inc_raw[col_rg].apply(clean_num) if col_rg else 0.0
+    df_inc['Reserve Net Loss Retention'] = df_inc_raw[col_rn].apply(clean_num) if col_rn else df_inc['Reserve Gross Loss']
     
-    # ค้นหาจากชื่อก่อน
-    for c, val, floats in numeric_scores:
-        c_lower = c.lower()
-        if 'gross' in c_lower and not gross_col_name:
-            gross_col_name = c
-        elif 'net' in c_lower and not net_col_name:
-            net_col_name = c
+    df_inc = df_inc[~df_inc['Claim No.'].isin(['NAN', 'NONE', '', 'NULL', 'TOTAL', 'ยอดรวม'])]
+    grp_inc = df_inc.groupby('Claim No.', as_index=False).sum()
 
-    # ถ้าชื่อไม่ชัดเจน ให้ใช้คอลัมน์ที่มีมูลค่าเงินสูงสุดเป็น Gross และอันดับสองเป็น Net
-    if not gross_col_name and len(numeric_scores) > 0:
-        gross_col_name = numeric_scores[0][0]
-    if not net_col_name and len(numeric_scores) > 1:
-        net_col_name = numeric_scores[1][0]
-    elif not net_col_name and gross_col_name:
-        net_col_name = gross_col_name
+    # Merge Data 2 ฝั่งเข้าด้วยกัน
+    df_master = pd.merge(grp_set, grp_inc, on='Claim No.', how='outer').fillna(0.0)
 
-    # สร้าง Clean DataFrame
-    res_df = pd.DataFrame()
-    res_df['Claim No.'] = df[claim_col].astype(str).str.strip().str.upper()
-    res_df['Gross'] = df[gross_col_name].apply(clean_to_float) if gross_col_name else 0.0
-    res_df['Net'] = df[net_col_name].apply(clean_to_float) if net_col_name else res_df['Gross']
+    # จัดรูปแบบคอลัมน์ตามไฟล์ Master
+    for col in ['Row Labels', 'Sub Class', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด']:
+        df_master[col] = ''
+    df_master['Status'] = 'Closed'
 
-    # กรองเฉพาะแถวที่มีเลข Claim จริง
-    res_df = res_df[~res_df['Claim No.'].isin(['NAN', 'NONE', '', 'NULL', 'TOTAL', 'ยอดรวม'])]
-    
-    return res_df
+    cols_order = ['Row Labels', 'Sub Class', 'Claim No.', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด', 
+                  'Settle Gross Loss', 'Settle Net Loss Retention', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']
+    df_master = df_master[cols_order]
 
-# ==========================================
-# STEP 1: UPLOAD & AUTOMATIC EXECUTION
-# ==========================================
-st.header("📌 อัปโหลดไฟล์ Original Data")
-file_input = st.file_uploader("ลากไฟล์ Excel (.xlsx) มาวางที่นี่ระบบจะทำงานให้อัตโนมัติทันที", type=["xlsx"])
+    # ยอดรวมสุทธิ
+    tot_sg = float(df_master['Settle Gross Loss'].sum())
+    tot_sn = float(df_master['Settle Net Loss Retention'].sum())
+    tot_rg = float(df_master['Reserve Gross Loss'].sum())
+    tot_rn = float(df_master['Reserve Net Loss Retention'].sum())
 
-if file_input:
-    with st.spinner("🤖 ระบบกำลังวิเคราะห์โครงสร้างไฟล์และประมวลผลให้อัตโนมัติ..."):
-        # ประมวลผล Sheet Settle และ Incurred/Reserve อัตโนมัติในตัวเอง
-        df_settle = process_sheet_fully_auto(file_input, 'Settle')
-        df_reserve = process_sheet_fully_auto(file_input, 'Incurred')
+    # แสดงผลทางหน้าจอ
+    st.success("✅ ประมวลผลและเชื่อมโยงตาราง Master เรียบร้อยแล้ว")
 
-        # จัดกลุ่มและรวมยอดตาม Claim No.
-        grp_settle = df_settle.groupby('Claim No.', as_index=False).agg({
-            'Gross': 'sum',
-            'Net': 'sum'
-        }).rename(columns={'Gross': 'Settle Gross Loss', 'Net': 'Settle Net Loss Retention'})
-
-        grp_reserve = df_reserve.groupby('Claim No.', as_index=False).agg({
-            'Gross': 'sum',
-            'Net': 'sum'
-        }).rename(columns={'Gross': 'Reserve Gross Loss', 'Net': 'Reserve Net Loss Retention'})
-
-        # รวมข้อมูล 2 ฝั่งเข้าด้วยกัน (Outer Join)
-        master_df = pd.merge(grp_settle, grp_reserve, on='Claim No.', how='outer').fillna(0.0)
-
-        # เติม คอลัมน์มาตรฐาน Bordereaux
-        for col in ['Row Labels', 'Sub Class', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด']:
-            master_df[col] = ''
-        master_df['Status'] = 'Closed'
-
-        # จัดเรียง คอลัมน์ตาม Format มาตรฐาน
-        final_cols = ['Row Labels', 'Sub Class', 'Claim No.', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด', 
-                      'Settle Gross Loss', 'Settle Net Loss Retention', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']
-        master_df = master_df[final_cols]
-
-        # คำนวณ ยอดรวม
-        tot_sg = float(master_df['Settle Gross Loss'].sum())
-        tot_sn = float(master_df['Settle Net Loss Retention'].sum())
-        tot_rg = float(master_df['Reserve Gross Loss'].sum())
-        tot_rn = float(master_df['Reserve Net Loss Retention'].sum())
-
-    st.success("✅ ประมวลผลสำเร็จ! ข้อมูลถูกดึงและคำนวณเรียบร้อยโดยไม่ต้องเลือกคอลัมน์")
-
-    # Display Metrics
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Settle Gross", f"{tot_sg:,.2f}")
-    m2.metric("Total Settle Net", f"{tot_sn:,.2f}")
-    m3.metric("Total Reserve Gross", f"{tot_rg:,.2f}")
-    m4.metric("Total Reserve Net", f"{tot_rn:,.2f}")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Settle Gross", f"{tot_sg:,.2f}")
+    col2.metric("Total Settle Net", f"{tot_sn:,.2f}")
+    col3.metric("Total Reserve Gross", f"{tot_rg:,.2f}")
+    col4.metric("Total Reserve Net", f"{tot_rn:,.2f}")
 
     st.markdown("---")
-    st.subheader("📋 ตัวอย่าง Bordereaux Master Data")
-    st.dataframe(master_df.head(15), use_container_width=True)
+    st.dataframe(df_master.head(15), use_container_width=True)
 
-    # ==========================================
-    # BUILD EXCEL WORKBOOK (STYLING)
-    # ==========================================
+    # ---------------------------------------------------------
+    # Export Excel File (Master Styled)
+    # ---------------------------------------------------------
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Details Claim"
 
-    # Styles Setup
     fill_settle = PatternFill(start_color="92D050", end_color="92D050", fill_type="solid")
     fill_reserve = PatternFill(start_color="8DB4E2", end_color="8DB4E2", fill_type="solid")
     fill_total = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-    
     font_bold = Font(name="Aptos", size=11, bold=True)
-    font_main = Font(name="Aptos", size=11)
-    
-    border_grid = Border(
+    font_regular = Font(name="Aptos", size=11)
+
+    thin_border = Border(
         left=Side(style='thin', color='D9D9D9'), right=Side(style='thin', color='D9D9D9'),
         top=Side(style='thin', color='D9D9D9'), bottom=Side(style='thin', color='D9D9D9')
     )
-    border_total = Border(top=Side(style='thin', color='000000'), bottom=Side(style='double', color='000000'))
+    total_border = Border(top=Side(style='thin', color='000000'), bottom=Side(style='double', color='000000'))
 
-    # Line 1: Empty, Line 2: Super Headers
     ws.append([])
     ws.append(['', '', '', '', '', '', '', 'Settle 12/2025', '', 'Reserve as at 31/12/2025', '', ''])
     ws.merge_cells('H2:I2')
     ws.merge_cells('J2:K2')
 
-    ws['H2'].fill, ws['H2'].font, ws['H2'].alignment = fill_settle, font_bold, Alignment(horizontal='center')
-    ws['J2'].fill, ws['J2'].font, ws['J2'].alignment = fill_reserve, font_bold, Alignment(horizontal='center')
+    ws['H2'].fill = fill_settle
+    ws['H2'].font = font_bold
+    ws['H2'].alignment = Alignment(horizontal='center')
+    ws['J2'].fill = fill_reserve
+    ws['J2'].font = font_bold
+    ws['J2'].alignment = Alignment(horizontal='center')
 
-    # Line 3: Column Headers
-    ws.append(final_cols)
+    ws.append(cols_order)
     for c in range(1, 13):
         cell = ws.cell(row=3, column=c)
         cell.font = font_bold
         cell.alignment = Alignment(horizontal='center', vertical='center')
-        cell.border = border_grid
+        cell.border = thin_border
         if c in [8, 9]: cell.fill = fill_settle
         elif c in [10, 11]: cell.fill = fill_reserve
 
-    # Data Rows
     r_idx = 4
-    for row in master_df.itertuples(index=False):
-        ws.append(list(row))
+    for r in df_master.itertuples(index=False):
+        ws.append(list(r))
         for c in range(1, 13):
             cell = ws.cell(row=r_idx, column=c)
-            cell.font = font_main
-            cell.border = border_grid
+            cell.font = font_regular
+            cell.border = thin_border
             if c in [8, 9, 10, 11]:
                 cell.number_format = '#,##0.00'
                 cell.alignment = Alignment(horizontal='right')
         r_idx += 1
 
-    # Total Row
     ws.append(['', '', '', '', '', '', '', tot_sg, tot_sn, tot_rg, tot_rn, ''])
     for c in range(1, 13):
         cell = ws.cell(row=r_idx, column=c)
         cell.font = font_bold
         cell.fill = fill_total
-        cell.border = border_total
+        cell.border = total_border
         if c in [8, 9, 10, 11]:
             cell.number_format = '#,##0.00'
             cell.alignment = Alignment(horizontal='right')
 
-    excel_out = io.BytesIO()
-    wb.save(excel_out)
+    excel_buffer = io.BytesIO()
+    wb.save(excel_buffer)
 
     st.download_button(
-        label="📥 ดาวน์โหลดไฟล์ Bordereaux Master (Excel)",
-        data=excel_out.getvalue(),
-        file_name="Bordereaux_Master_Automated.xlsx",
+        label="📥 ดาวน์โหลด Bordereaux Master (Excel)",
+        data=excel_buffer.getvalue(),
+        file_name="Bordereaux_Master_Connected.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
