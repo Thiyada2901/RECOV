@@ -2,3 +2,5 @@ pandas
 openpyxl
 streamlit
 reportlab
+streamlit
+weasyprint
