@@ -36,95 +36,95 @@ if uploaded_file:
     st.markdown("---")
     st.header("📋 Step 2: ตรวจสอบ Bordereaux Master (Details Claim - ตกแต่งสีสันตาม Master)")
     
-    # ลบช่องว่างส่วนเกินหน้า-หลังชื่อคอลัมน์ทั้งหมด (Strip whitespace กัน KeyError)
+    # Clean whitespace ในชื่อคอลัมน์
     df_inc_ori.columns = df_inc_ori.columns.astype(str).str.strip()
     df_set_ori.columns = df_set_ori.columns.astype(str).str.strip()
 
-    # ฟังก์ชันช่วย map คอลัมน์ยืดหยุ่น
     def find_col(df, possible_names):
         for name in possible_names:
             if name in df.columns:
                 return name
         return None
 
-    # ดึงชื่อคอลัมน์จริงจากไฟล์ Settlement
-    col_claim_set = find_col(df_set_ori, ['เลขที่สินไหม', 'Claim No', 'Claim No.', 'เลขสินไหม']) or 'เลขที่สินไหม'
-    col_branch_set = find_col(df_set_ori, ['สาขา', 'Branch']) or 'สาขา'
-    col_subclass_set = find_col(df_set_ori, ['Sub Class', 'SubClass', 'Class']) or 'Sub Class'
-    col_policy_set = find_col(df_set_ori, ['เลขที่กรมธรรม์', 'Policy No', 'Policy No.']) or 'เลขที่กรมธรรม์'
-    col_date_set = find_col(df_set_ori, ['วันที่เกิดเหตุ', 'Loss Date', 'Date of Loss']) or 'วันที่เกิดเหตุ'
-    col_insured_set = find_col(df_set_ori, ['ชื่อผู้เอาประกัน/ชื่อบริษัทประกันภัย', 'ชื่อผู้เอาประกัน', 'Insured Name']) or 'ชื่อผู้เอาประกัน/ชื่อบริษัทประกันภัย'
-    col_province_set = find_col(df_set_ori, ['จังหวัด', 'Province']) or 'จังหวัด'
-    col_paid_set = find_col(df_set_ori, ['ค่าสินไหม', 'ค่าสินไหมจ่าย', 'Settle Amount', 'Paid Amount']) or 'ค่าสินไหม'
-    col_ret_set = find_col(df_set_ori, ['Retention', 'Retention Amount']) or 'Retention'
+    # Mapping คอลัมน์ Settlement Data
+    col_claim_set = find_col(df_set_ori, ['เลขที่สินไหม', 'Claim No', 'Claim No.', 'เลขสินไหม'])
+    col_branch_set = find_col(df_set_ori, ['สาขา', 'Branch'])
+    col_subclass_set = find_col(df_set_ori, ['Sub Class', 'SubClass', 'Class'])
+    col_policy_set = find_col(df_set_ori, ['เลขที่กรมธรรม์', 'Policy No', 'Policy No.'])
+    col_date_set = find_col(df_set_ori, ['วันที่เกิดเหตุ', 'Loss Date', 'Date of Loss'])
+    col_insured_set = find_col(df_set_ori, ['ชื่อผู้เอาประกัน/ชื่อบริษัทประกันภัย', 'ชื่อผู้เอาประกัน', 'Insured Name'])
+    col_province_set = find_col(df_set_ori, ['จังหวัด', 'Province'])
+    col_paid_set = find_col(df_set_ori, ['ค่าสินไหม', 'ค่าสินไหมจ่าย', 'Settle Amount', 'Paid Amount'])
+    col_ret_set = find_col(df_set_ori, ['Retention', 'Retention Amount'])
 
-    # Aggregate Settle Data
+    # หากไม่มีคอลัมน์หลัก ให้ใช้คอลัมน์แรกสุดเพื่อกันพัง
+    if not col_claim_set: col_claim_set = df_set_ori.columns[0]
+
     agg_dict_set = {}
-    if col_branch_set in df_set_ori.columns: agg_dict_set[col_branch_set] = 'first'
-    if col_subclass_set in df_set_ori.columns: agg_dict_set[col_subclass_set] = 'first'
-    if col_policy_set in df_set_ori.columns: agg_dict_set[col_policy_set] = 'first'
-    if col_date_set in df_set_ori.columns: agg_dict_set[col_date_set] = 'first'
-    if col_insured_set in df_set_ori.columns: agg_dict_set[col_insured_set] = 'first'
-    if col_province_set in df_set_ori.columns: agg_dict_set[col_province_set] = 'first'
-    if col_paid_set in df_set_ori.columns: agg_dict_set[col_paid_set] = 'sum'
-    if col_ret_set in df_set_ori.columns: agg_dict_set[col_ret_set] = 'sum'
+    rename_dict_set = {col_claim_set: 'Claim No.'}
 
-    df_set_grp = df_set_ori.groupby(col_claim_set, as_index=False).agg(agg_dict_set).rename(columns={
-        col_branch_set: 'Row Labels',
-        col_claim_set: 'Claim No.',
-        col_policy_set: 'Policy No.',
-        col_date_set: 'Loss Date',
-        col_insured_set: 'Insured Name',
-        col_paid_set: 'Settle Gross Loss',
-        col_ret_set: 'Settle Net Loss Retention'
-    })
+    if col_branch_set: agg_dict_set[col_branch_set] = 'first'; rename_dict_set[col_branch_set] = 'Row Labels'
+    if col_subclass_set: agg_dict_set[col_subclass_set] = 'first'; rename_dict_set[col_subclass_set] = 'Sub Class'
+    if col_policy_set: agg_dict_set[col_policy_set] = 'first'; rename_dict_set[col_policy_set] = 'Policy No.'
+    if col_date_set: agg_dict_set[col_date_set] = 'first'; rename_dict_set[col_date_set] = 'Loss Date'
+    if col_insured_set: agg_dict_set[col_insured_set] = 'first'; rename_dict_set[col_insured_set] = 'Insured Name'
+    if col_province_set: agg_dict_set[col_province_set] = 'first'; rename_dict_set[col_province_set] = 'จังหวัด'
+    if col_paid_set: agg_dict_set[col_paid_set] = 'sum'; rename_dict_set[col_paid_set] = 'Settle Gross Loss'
+    if col_ret_set: agg_dict_set[col_ret_set] = 'sum'; rename_dict_set[col_ret_set] = 'Settle Net Loss Retention'
 
-    # ดึงชื่อคอลัมน์จริงจากไฟล์ Incurred / Reserve
-    col_claim_inc = find_col(df_inc_ori, ['เลขที่สินไหม', 'Claim No', 'Claim No.', 'เลขสินไหม']) or 'เลขที่สินไหม'
-    col_branch_inc = find_col(df_inc_ori, ['สาขา', 'Branch']) or 'สาขา'
-    col_subclass_inc = find_col(df_inc_ori, ['Sub Class', 'SubClass']) or 'Sub Class'
-    col_policy_inc = find_col(df_inc_ori, ['เลขที่กรมธรรม์', 'Policy No']) or 'เลขที่กรมธรรม์'
-    col_date_inc = find_col(df_inc_ori, ['วันที่เกิดเหตุ', 'Loss Date']) or 'วันที่เกิดเหตุ'
-    col_insured_inc = find_col(df_inc_ori, ['ชื่อผู้เอาประกัน', 'Insured Name']) or 'ชื่อผู้เอาประกัน'
-    col_province_inc = find_col(df_inc_ori, ['จังหวัด', 'Province']) or 'จังหวัด'
-    col_est_inc = find_col(df_inc_ori, ['ประมาณการค่าสินไหม', 'Reserve Amount', 'Estimated Loss']) or 'ประมาณการค่าสินไหม'
-    col_ret_inc = find_col(df_inc_ori, ['Retention (By type of loss)', 'Retention']) or 'Retention (By type of loss)'
-    col_status_inc = find_col(df_inc_ori, ['สถานะ', 'Status']) or 'สถานะ'
+    df_set_grp = df_set_ori.groupby(col_claim_set, as_index=False).agg(agg_dict_set).rename(columns=rename_dict_set)
 
-    # Aggregate Reserve Data
+    # Mapping คอลัมน์ Incurred Data
+    col_claim_inc = find_col(df_inc_ori, ['เลขที่สินไหม', 'Claim No', 'Claim No.', 'เลขสินไหม'])
+    col_branch_inc = find_col(df_inc_ori, ['สาขา', 'Branch'])
+    col_subclass_inc = find_col(df_inc_ori, ['Sub Class', 'SubClass'])
+    col_policy_inc = find_col(df_inc_ori, ['เลขที่กรมธรรม์', 'Policy No'])
+    col_date_inc = find_col(df_inc_ori, ['วันที่เกิดเหตุ', 'Loss Date'])
+    col_insured_inc = find_col(df_inc_ori, ['ชื่อผู้เอาประกัน', 'Insured Name'])
+    col_province_inc = find_col(df_inc_ori, ['จังหวัด', 'Province'])
+    col_est_inc = find_col(df_inc_ori, ['ประมาณการค่าสินไหม', 'Reserve Amount', 'Estimated Loss'])
+    col_ret_inc = find_col(df_inc_ori, ['Retention (By type of loss)', 'Retention'])
+    col_status_inc = find_col(df_inc_ori, ['สถานะ', 'Status'])
+
+    if not col_claim_inc: col_claim_inc = df_inc_ori.columns[0]
+
     agg_dict_inc = {}
-    if col_branch_inc in df_inc_ori.columns: agg_dict_inc[col_branch_inc] = 'first'
-    if col_subclass_inc in df_inc_ori.columns: agg_dict_inc[col_subclass_inc] = 'first'
-    if col_policy_inc in df_inc_ori.columns: agg_dict_inc[col_policy_inc] = 'first'
-    if col_date_inc in df_inc_ori.columns: agg_dict_inc[col_date_inc] = 'first'
-    if col_insured_inc in df_inc_ori.columns: agg_dict_inc[col_insured_inc] = 'first'
-    if col_province_inc in df_inc_ori.columns: agg_dict_inc[col_province_inc] = 'first'
-    if col_est_inc in df_inc_ori.columns: agg_dict_inc[col_est_inc] = 'sum'
-    if col_ret_inc in df_inc_ori.columns: agg_dict_inc[col_ret_inc] = 'sum'
-    if col_status_inc in df_inc_ori.columns: agg_dict_inc[col_status_inc] = 'first'
+    rename_dict_inc = {col_claim_inc: 'Claim No.'}
 
-    df_inc_grp = df_inc_ori.groupby(col_claim_inc, as_index=False).agg(agg_dict_inc).rename(columns={
-        col_branch_inc: 'Row Labels',
-        col_claim_inc: 'Claim No.',
-        col_policy_inc: 'Policy No.',
-        col_date_inc: 'Loss Date',
-        col_insured_inc: 'Insured Name',
-        col_est_inc: 'Reserve Gross Loss',
-        col_ret_inc: 'Reserve Net Loss Retention',
-        col_status_inc: 'Status'
-    })
+    if col_branch_inc: agg_dict_inc[col_branch_inc] = 'first'; rename_dict_inc[col_branch_inc] = 'Row Labels'
+    if col_subclass_inc: agg_dict_inc[col_subclass_inc] = 'first'; rename_dict_inc[col_subclass_inc] = 'Sub Class'
+    if col_policy_inc: agg_dict_inc[col_policy_inc] = 'first'; rename_dict_inc[col_policy_inc] = 'Policy No.'
+    if col_date_inc: agg_dict_inc[col_date_inc] = 'first'; rename_dict_inc[col_date_inc] = 'Loss Date'
+    if col_insured_inc: agg_dict_inc[col_insured_inc] = 'first'; rename_dict_inc[col_insured_inc] = 'Insured Name'
+    if col_province_inc: agg_dict_inc[col_province_inc] = 'first'; rename_dict_inc[col_province_inc] = 'จังหวัด'
+    if col_est_inc: agg_dict_inc[col_est_inc] = 'sum'; rename_dict_inc[col_est_inc] = 'Reserve Gross Loss'
+    if col_ret_inc: agg_dict_inc[col_ret_inc] = 'sum'; rename_dict_inc[col_ret_inc] = 'Reserve Net Loss Retention'
+    if col_status_inc: agg_dict_inc[col_status_inc] = 'first'; rename_dict_inc[col_status_inc] = 'Status'
+
+    df_inc_grp = df_inc_ori.groupby(col_claim_inc, as_index=False).agg(agg_dict_inc).rename(columns=rename_dict_inc)
+
+    # 🔒 รับประกันว่า df_inc_grp มีคอลัมน์ครบถ้วนก่อนทำการ Merge กัน KeyError
+    for required_col in ['Claim No.', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']:
+        if required_col not in df_inc_grp.columns:
+            if required_col in ['Reserve Gross Loss', 'Reserve Net Loss Retention']:
+                df_inc_grp[required_col] = 0.0
+            elif required_col == 'Status':
+                df_inc_grp[required_col] = 'Closed'
+            else:
+                df_inc_grp[required_col] = ''
 
     # Outer Merge on Claim No.
     df_bor = pd.merge(df_set_grp, df_inc_grp[['Claim No.', 'Reserve Gross Loss', 'Reserve Net Loss Retention', 'Status']], on='Claim No.', how='outer')
 
+    # จัดการคอลัมน์ฝั่ง Bordereaux ให้ครบถ้วน
     for c in ['Row Labels', 'Sub Class', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด']:
         if c not in df_bor.columns:
             df_bor[c] = ''
 
     df_bor['Settle Gross Loss'] = df_bor['Settle Gross Loss'].fillna(0) if 'Settle Gross Loss' in df_bor.columns else 0
     df_bor['Settle Net Loss Retention'] = df_bor['Settle Net Loss Retention'].fillna(0) if 'Settle Net Loss Retention' in df_bor.columns else 0
-    df_bor['Reserve Gross Loss'] = df_bor['Reserve Gross Loss'].fillna(0) if 'Reserve Gross Loss' in df_bor.columns else 0
-    df_bor['Reserve Net Loss Retention'] = df_bor['Reserve Net Loss Retention'].fillna(0) if 'Reserve Net Loss Retention' in df_bor.columns else 0
+    df_bor['Reserve Gross Loss'] = df_bor['Reserve Gross Loss'].fillna(0)
+    df_bor['Reserve Net Loss Retention'] = df_bor['Reserve Net Loss Retention'].fillna(0)
     df_bor['Status'] = df_bor['Status'].fillna('Closed')
 
     cols_order = ['Row Labels', 'Sub Class', 'Claim No.', 'Policy No.', 'Loss Date', 'Insured Name', 'จังหวัด', 
@@ -363,7 +363,7 @@ if uploaded_file:
 
         elements = []
 
-        # 1. Header Area
+        # Header Area
         left_addr = """สำนักงานใหญ่ตั้งอยู่เลขที่<br/>
 1115 ถนนพระราม 3 แขวงช่องนนทรี<br/>
 เขตยานนาวา กรุงเทพฯ 10120<br/>
@@ -372,7 +372,7 @@ if uploaded_file:
 0107538000533"""
 
         right_addr = """<b>HEAD OFFICE ADDRESS :-</b><br/>
-115 RAMA 3 ROAD, Chong Nonsi,<br/>
+1115 RAMA 3 ROAD, Chong Nonsi,<br/>
 Yannawa, Bangkok 10120<br/>
 TEL. 1736, 0 2239 2200"""
 
