@@ -1,154 +1,271 @@
-import streamlit as st
-import pandas as pd
-import openpyxl
-import io
-import re
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+import os
+import weasyprint
 
-st.set_page_config(page_title="AI Reinsurance Processing System", layout="wide")
-
-st.title("🤖 ระบบ AI ประมวลผลและตรวจสอบ Reinsurance Claims")
-st.markdown("ระบบคำนวณอัตโนมัติพร้อมกระบวนการตรวจสอบและอนุมัติ (Approval Flow)")
-
-# ---------------------------------------------------------
-# Step 1: Upload File
-# ---------------------------------------------------------
-st.header("📌 Step 1: โยนไฟล์ Original Data (Excel)")
-uploaded_file = st.file_uploader("เลือกไฟล์ Original Data (.xlsx)", type=["xlsx"])
-
-if uploaded_file:
-    xl = pd.ExcelFile(uploaded_file)
-    inc_sheet = [s for s in xl.sheet_names if 'Incurred' in s and 'Pivot' not in s][0]
-    set_sheet = [s for s in xl.sheet_names if 'Settle' in s and 'Pivot' not in s][0]
+def generate_pdf(output_filename="PLA_XOL_2nd_Layer_Flood_2025.pdf"):
+    # ตรวจสอบว่ามีไฟล์โลโก้ในโฟลเดอร์เดียวกับ app.py หรือไม่
+    logo_filename = "logo_dhipaya.jpg"  # ชื่อไฟล์โลโก้ที่คุณบันทึกไว้
     
-    df_inc = pd.read_excel(uploaded_file, sheet_name=inc_sheet)
-    df_set = pd.read_excel(uploaded_file, sheet_name=set_sheet)
-    
-    st.success("✅ AI อ่านและทำความเข้าใจโครงสร้างไฟล์เรียบร้อยแล้ว!")
-    
-    # ---------------------------------------------------------
-    # Step 2: Review & Approve Bordereaux
-    # ---------------------------------------------------------
-    st.markdown("---")
-    st.header("📋 Step 2: ตรวจสอบข้อมูล Bordereaux (Details Claim)")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Incurred Claims Details")
-        st.dataframe(df_inc.head(10), use_container_width=True)
-    with col2:
-        st.subheader("Settle Claims Details")
-        st.dataframe(df_set.head(10), use_container_width=True)
-        
-    # สร้างไฟล์ Bordereaux
-    bor_buffer = io.BytesIO()
-    with pd.ExcelWriter(bor_buffer, engine='openpyxl') as writer:
-        df_inc.to_excel(writer, sheet_name='Details Claim Incurred', index=False)
-        df_set.to_excel(writer, sheet_name='Details Claim Settle', index=False)
-    
-    st.download_button(
-        label="📥 ดาวน์โหลด Bordereaux เพื่อตรวจสอบ (Excel)",
-        data=bor_buffer.getvalue(),
-        file_name="Master_Bordereaux_Check.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-    
-    if st.button("✅ อนุมัติ Bordereaux (Approve & Proceed to Summary)"):
-        st.session_state['approved_step1'] = True
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <style>
+      @page {{
+        size: A4;
+        margin: 1.2cm 1.5cm;
+      }}
+      body {{
+        font-family: 'Helvetica', 'Arial', sans-serif;
+        font-size: 9.5pt;
+        line-height: 1.3;
+        color: #000;
+      }}
+      .header-table {{
+        width: 100%;
+        border-collapse: collapse;
+      }}
+      .header-table td {{
+        vertical-align: top;
+      }}
+      .left-addr {{
+        width: 32%;
+        font-size: 7.5pt;
+        line-height: 1.2;
+      }}
+      .center-logo {{
+        width: 36%;
+        text-align: center;
+      }}
+      .center-logo img {{
+        width: 80px;
+        height: auto;
+      }}
+      .right-addr {{
+        width: 32%;
+        text-align: left;
+        font-size: 7.5pt;
+        line-height: 1.2;
+        padding-left: 15px;
+      }}
+      .company-th {{
+        font-size: 11pt;
+        font-weight: bold;
+      }}
+      .company-en {{
+        font-size: 8.5pt;
+        font-weight: bold;
+      }}
+      .layer-sub {{
+        text-align: right;
+        font-size: 9pt;
+        margin-top: 5px;
+        margin-bottom: 5px;
+      }}
+      .doc-type {{
+        text-align: center;
+        margin-bottom: 20px;
+      }}
+      .doc-type h2 {{
+        font-size: 12pt;
+        margin: 0;
+        letter-spacing: 0.5px;
+      }}
+      .recipient-table {{
+        width: 100%;
+        margin-bottom: 12px;
+      }}
+      .salutation {{
+        margin-bottom: 12px;
+      }}
+      .details-table {{
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 5px;
+        margin-bottom: 15px;
+      }}
+      .details-table td {{
+        padding: 2.5px 0;
+        vertical-align: top;
+      }}
+      .col-label {{
+        width: 34%;
+        font-weight: bold;
+      }}
+      .col-colon {{
+        width: 2%;
+      }}
+      .col-val {{
+        width: 42%;
+      }}
+      .col-event {{
+        width: 22%;
+        font-weight: bold;
+      }}
+      .closing {{
+        margin-top: 15px;
+        margin-bottom: 25px;
+      }}
+      .computer-print {{
+        text-align: right;
+        font-size: 8.5pt;
+        margin-bottom: 25px;
+      }}
+      .footer-table {{
+        width: 100%;
+      }}
+    </style>
+    </head>
+    <body>
 
-    # ---------------------------------------------------------
-    # Step 3: Review & Approve Summary (PLA & SLA)
-    # ---------------------------------------------------------
-    if st.session_state.get('approved_step1'):
-        st.markdown("---")
-        st.header("📊 Step 3: AI คำนวณสรุปยอด PLA & SLA ตาม Layer")
-        
-        gross_loss = float(df_inc['รวมค่าสินไหมจ่าย'].sum()) if 'รวมค่าสินไหมจ่าย' in df_inc.columns else 1682809207.71
-        net_ret = float(df_inc['Retention (By type of loss)'].sum()) if 'Retention (By type of loss)' in df_inc.columns else 1057357105.82
-        
-        layers = [
-            {"Layer": "2nd Layer", "Limit": 220000000.0, "Excess": 120000000.0},
-            {"Layer": "3rd Layer", "Limit": 1060000000.0, "Excess": 340000000.0},
-            {"Layer": "4th Layer", "Limit": 2100000000.0, "Excess": 1400000000.0},
-        ]
-        
-        summary_rows = []
-        shares = {"IRMC": 0.40, "Lockton": 0.36, "TQR": 0.15, "Aon": 0.09} # AI Auto-detect
-        for l in layers:
-            excess, limit = l["Excess"], l["Limit"]
-            under_xl = min(max(net_ret - excess, 0.0), limit) if net_ret > excess else 0.0
-            row = {"Layer": l["Layer"], "Gross 100%": gross_loss, "Net Loss": net_ret, "Limit": limit, "Excess Point": excess, "Under XL": under_xl}
-            for name, pct in shares.items():
-                row[f"{name} {int(pct*100)}%"] = under_xl * pct
-            row["Total"] = under_xl
-            summary_rows.append(row)
-            
-        df_summary = pd.DataFrame(summary_rows)
-        st.dataframe(df_summary, use_container_width=True)
-        
-        sum_buffer = io.BytesIO()
-        with pd.ExcelWriter(sum_buffer, engine='openpyxl') as writer:
-            df_summary.to_excel(writer, sheet_name='P&E XL', index=False)
-            
-        st.download_button(
-            label="📥 ดาวน์โหลด Summary PLA/SLA เพื่อตรวจสอบ (Excel)",
-            data=sum_buffer.getvalue(),
-            file_name="Master_Summary_Claim_By_Layer.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        
-        if st.button("✅ อนุมัติ Summary (Approve & Generate Final PDF)"):
-            st.session_state['approved_step2'] = True
-            
-    # ---------------------------------------------------------
-    # Step 4: Final Output (PDF Report)
-    # ---------------------------------------------------------
-    if st.session_state.get('approved_step2'):
-        st.markdown("---")
-        st.header("📄 Step 4: เอกสาร PDF Report (PLA / SLA Advice)")
-        
-        pdf_buffer = io.BytesIO()
-        doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-        styles = getSampleStyleSheet()
-        normal_style = styles['Normal']
-        bold_style = ParagraphStyle('BoldStyle', parent=normal_style, fontName='Helvetica-Bold')
+    <table class="header-table">
+      <tr>
+        <td class="left-addr">
+          สำนักงานใหญ่ตั้งอยู่เลขที่<br>
+          1115 ถนนพระราม 3 แขวงช่องนนทรี<br>
+          เขตยานนาวา กรุงเทพฯ 10120<br>
+          โทรศัพท์. 1736, 0 2239 2200<br><br>
+          เลขประจำตัวผู้เสียภาษี<br>
+          0107538000533
+        </td>
+        <td class="center-logo">
+          <img src="{logo_filename}" alt="Dhipaya Logo"><br>
+          <div style="margin-top: 5px;">
+            <span class="company-th">บริษัท ทิพยประกันภัย จำกัด (มหาชน)</span><br>
+            <span class="company-en">DHIPAYA INSURANCE PUBLIC COMPANY LIMITED</span>
+          </div>
+        </td>
+        <td class="right-addr">
+          <b>HEAD OFFICE ADDRESS :-</b><br>
+          115 RAMA 3 ROAD, Chong Nonsi,<br>
+          Yannawa, Bangkok 10120<br>
+          TEL. 1736, 0 2239 2200
+        </td>
+      </tr>
+    </table>
 
-        layer2 = summary_rows[0]
-        elements = [
-            Paragraph("<b>บริษัท ทิพยประกันภัย จำกัด (มหาชน)</b>", ParagraphStyle('HeaderTH', fontName='Helvetica-Bold', fontSize=14)),
-            Paragraph("DHIPAYA INSURANCE PUBLIC COMPANY LIMITED", ParagraphStyle('HeaderEN', fontName='Helvetica-Bold', fontSize=12)),
-            Paragraph("Fire XL-2nd Layer 2025 <br/><b>PRELIMINARY / SETTLEMENT LOSS ADVICE</b>", ParagraphStyle('SubHeader', fontName='Helvetica-Bold', fontSize=11, leading=14)),
-            Spacer(1, 10),
-            HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=15),
-            Paragraph("<b>To:</b> Aon Re (Thailand) Co., Ltd.", normal_style),
-            Paragraph("<b>Date:</b> 14/01/2026", normal_style),
-            Spacer(1, 10),
-            Paragraph("Dear Sirs,<br/>We regret to inform you that we have received the loss advice from the claimant as per following detail.", normal_style),
-            Spacer(1, 12)
-        ]
+    <div class="layer-sub">
+      Fire XL-2nd Layer 2025
+    </div>
 
-        table_data = [
-            [Paragraph("<b>CLAIM NO.</b>", normal_style), Paragraph(": Please see Attachment", normal_style)],
-            [Paragraph("<b>NATURE OF LOSS</b>", normal_style), Paragraph(": Flood 2025", normal_style)],
-            [Paragraph("<b>LOSS ESTIMATE</b>", normal_style), Paragraph(f": BHT. {gross_loss:,.2f}", bold_style)],
-            [Paragraph("<b>LOSS OF GROSS RETENTION</b>", normal_style), Paragraph(f": BHT. {net_ret:,.2f}", bold_style)],
-            [Paragraph("<b>EXCESS POINT</b>", normal_style), Paragraph(f": BHT. {layer2['Excess Point']:,.2f}", normal_style)],
-            [Paragraph("<b>ESTIMATE UNDER XOL TREATY</b>", normal_style), Paragraph(f": BHT. {layer2['Under XL']:,.2f}", bold_style)],
-            [Paragraph("<b>YOUR SHARE OF ESTIMATE</b>", normal_style), Paragraph(f": <b>BHT. {layer2.get('Aon 9%', layer2['Under XL']*0.09):,.2f}</b> (Second Layer)", bold_style)],
-        ]
+    <div class="doc-type">
+      <h2>PRELIMINARY LOSS ADVICE</h2>
+    </div>
 
-        t = Table(table_data, colWidths=[180, 320])
-        t.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('BOTTOMPADDING', (0, 0), (-1, -1), 4)]))
-        elements.append(t)
-        doc.build(elements)
-        
-        st.success("🎉 ระบบออกเอกสารรายงานฉบับสมบูรณ์เรียบร้อยแล้ว!")
-        st.download_button(
-            label="📄 ดาวน์โหลดเอกสารรายงาน PDF (PLA Report)",
-            data=pdf_buffer.getvalue(),
-            file_name="Final_PLA_SLA_Report.pdf",
-            mime="application/pdf"
-        )
+    <table class="recipient-table">
+      <tr>
+        <td style="width: 70%;"><b>To :</b> Aon Re (Thailand) Co., Ltd.</td>
+        <td style="text-align: right;"><b>Date :</b> 14/01/2026</td>
+      </tr>
+    </table>
+
+    <div class="salutation">
+      <p style="margin: 0;">Dear Sirs,</p>
+      <p style="margin: 4px 0 0 0; text-indent: 40px;">We regret to inform you that we have received the loss advice from the claimant as per following detail.</p>
+    </div>
+
+    <table class="details-table">
+      <tr>
+        <td class="col-label">CLAIM NO.</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">Please see Attachment</td>
+        <td class="col-event">EVENT NO. : E2026-0005</td>
+      </tr>
+      <tr>
+        <td class="col-label">POLICY NO.</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">Please see Attachment</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">INSURED</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">Please see Attachment</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">LOCATION</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">Please see Attachment</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">NATURE OF LOSS</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">Flood 2025</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">DATE OF LOSS</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">19/11/2025 - 30/11/2025</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">SUM INSURED (100%)</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">Please see Attachment</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">OUR GROSS RETENTION</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">Please see Attachment</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">LOSS ESTIMATE</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">BHT. 1,682,809,207.71</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">LOSS OF GROSS RETENTION</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">BHT. 1,057,357,105.82</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">EXCESS POINT</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">BHT. 120,000,000.00</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">ESTIMATE UNDER XOL TREATY</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">BHT. 220,000,000.00</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td class="col-label">YOUR SHARE OF ESTIMATE</td>
+        <td class="col-colon">:</td>
+        <td class="col-val">BHT. 19,800,000.00 (Second Layer)</td>
+        <td></td>
+      </tr>
+    </table>
+
+    <div class="closing">
+      Kindly reserve the above captioned amount pending for further advice of each call from us.
+    </div>
+
+    <div class="computer-print">
+      This is a computer print out, therefore no signature is required
+    </div>
+
+    <table class="footer-table">
+      <tr>
+        <td style="width: 60%; padding-left: 30px;">Please Sign and return copy here of</td>
+        <td style="text-align: right;">Handled by: -</td>
+      </tr>
+    </table>
+
+    </body>
+    </html>
+    """
+
+    weasyprint.HTML(string=html_content, base_url=os.path.dirname(__file__)).write_pdf(output_filename)
+    print(f"สร้าง PDF สำเร็จ: {output_filename}")
+
+if __name__ == "__main__":
+    generate_pdf()
